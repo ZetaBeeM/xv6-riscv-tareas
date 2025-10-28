@@ -20,6 +20,43 @@ static void freeproc(struct proc *p);
 
 extern char trampoline[]; // trampoline.S
 
+static unsigned long randstate = 1;
+
+// Copiado de grind.c con el fin de calcular un número aleatorio dentro del rango de tickets
+// from FreeBSD.
+int
+do_rand(unsigned long *ctx)
+{
+/*
+ * Compute x = (7^5 * x) mod (2^31 - 1)
+ * without overflowing 31 bits:
+ *      (2^31 - 1) = 127773 * (7^5) + 2836
+ * From "Random number generators: good ones are hard to find",
+ * Park and Miller, Communications of the ACM, vol. 31, no. 10,
+ * October 1988, p. 1195.
+ */
+    long hi, lo, x;
+
+    /* Transform to [1, 0x7ffffffe] range. */
+    x = (*ctx % 0x7ffffffe) + 1;
+    hi = x / 127773;
+    lo = x % 127773;
+    x = 16807 * lo - 2836 * hi;
+    if (x < 0)
+        x += 0x7fffffff;
+    /* Transform to [0, 0x7ffffffd] range. */
+    x--;
+    *ctx = x;
+    return (x);
+}
+
+// Calculamos un número al azar usando do_rand, y calculamos el módulo de este al ser dividido con la cantidad total de tickets.
+
+int generadortickets(int total){
+  int randint = do_rand(&randstate);
+  return (randint % total) + 1;
+}
+
 // helps ensure that wakeups of wait()ing
 // parents are not lost. helps obey the
 // memory model when using p->parent.
@@ -102,6 +139,8 @@ allocpid()
   return pid;
 }
 
+
+
 // Look in the process table for an UNUSED proc.
 // If found, initialize state required to run in the kernel,
 // and return with p->lock held.
@@ -124,7 +163,8 @@ allocproc(void)
 found:
   p->pid = allocpid();
   p->state = USED;
-
+  p->tickets = 100; // Cuando inicializamos un proceso, le damos 100 tickets
+  p->run_slices = 0;
   // Allocate a trapframe page.
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
     freeproc(p);
@@ -169,6 +209,8 @@ freeproc(struct proc *p)
   p->killed = 0;
   p->xstate = 0;
   p->state = UNUSED;
+  p->tickets = 0; // Cuando terminamos el proceso, le quitamos los tickets.
+  p->run_slices = 0;
 }
 
 // Create a user page table for a given process, with no user memory,
@@ -278,6 +320,11 @@ kfork(void)
 
   // Cause fork to return 0 in the child.
   np->trapframe->a0 = 0;
+  
+  // Le damos 100 tickets al hijo
+  np->tickets = 100;
+  // El proceso es nuevo, entonces nunca ha sido elegido
+  np->run_slices = 0;
 
   // increment reference counts on open file descriptors.
   for(i = 0; i < NOFILE; i++)
@@ -411,6 +458,7 @@ kwait(uint64 addr)
   }
 }
 
+
 // Per-CPU process scheduler.
 // Each CPU calls scheduler() after setting itself up.
 // Scheduler never returns.  It loops, doing:
@@ -423,7 +471,10 @@ scheduler(void)
 {
   struct proc *p;
   struct cpu *c = mycpu();
-
+  // Creamos una variable para almacenar la cantidad total de tickets
+  int total;
+  int lotto;
+  int actual;
   c->proc = 0;
   for(;;){
     // The most recent process to run may have had interrupts
@@ -433,26 +484,49 @@ scheduler(void)
     // and wfi.
     intr_on();
     intr_off();
-
-    int found = 0;
+    // Cada vez que se termina de ejecutar el proceso (o cuando se inicializa el scheduler), ponemos la cantidad total de tickets en 0
+    // en caso de que esta haya cambiado y se tenga que calcular nuevamente.
+    total = 0;
+    actual = 0;
+    // Iteramos sobre todos los procesos, y los que se encuentran en estado RUNNABLE suman al total de tickets los suyos.
     for(p = proc; p < &proc[NPROC]; p++) {
-      acquire(&p->lock);
-      if(p->state == RUNNABLE) {
-        // Switch to chosen process.  It is the process's job
-        // to release its lock and then reacquire it
-        // before jumping back to us.
-        p->state = RUNNING;
-        c->proc = p;
-        swtch(&c->context, &p->context);
-
-        // Process is done running for now.
-        // It should have changed its p->state before coming back.
-        c->proc = 0;
-        found = 1;
+      if (p->state == RUNNABLE) {
+        if (!p->tickets || p->tickets < 1){ // Robustez: Aseguramos que todos los procesos RUNNABLE tengan al menos un ticket
+          p->tickets = 1;
+        }
+        total += p->tickets;
       }
-      release(&p->lock);
     }
-    if(found == 0) {
+    if (total == 0){
+      continue; // Robustez: Si el total es 0, continuamos al siguiente ciclo.
+    }
+
+    lotto = generadortickets(total);
+
+    for(p = proc; p < &proc[NPROC]; p++){
+      if(p->state == RUNNABLE) {
+        actual += p->tickets;
+      }
+      if(actual >= lotto){
+        acquire(&p->lock);
+        if(p->state == RUNNABLE) {
+          // Switch to chosen process.  It is the process's job
+          // to release its lock and then reacquire it
+          // before jumping back to us.
+          p->state = RUNNING;
+          // Cuando se empieza a ejecutar un proceso, aumentamos la cuenta de veces que se eligió.
+          p->run_slices += 1;
+          c->proc = p;
+          swtch(&c->context, &p->context);
+
+          // Process is done running for now.
+          // It should have changed its p->state before coming back.
+          c->proc = 0;
+        }
+        release(&p->lock);
+      }
+    }
+    if(total == 0) {
       // nothing to run; stop running on this core until an interrupt.
       asm volatile("wfi");
     }
@@ -624,6 +698,20 @@ killed(struct proc *p)
   k = p->killed;
   release(&p->lock);
   return k;
+}
+
+int
+settickets(struct proc *p, int newtickets)
+{
+  acquire(&p->lock); // Adquirimos el candado del proceso
+  if (newtickets >= 1){ // Si la cantidad de tickets es valida (igual o mayor a uno)
+    p->tickets = newtickets; // Cambiamos la cantidad de tickets que tiene a esa
+  }
+  else{ // Si no la es
+    p->tickets = 1; // La cambiamos a 1
+  }
+  release(&p->lock); // Soltamos el candado
+  return 0;
 }
 
 // Copy to either a user address, or kernel address,
