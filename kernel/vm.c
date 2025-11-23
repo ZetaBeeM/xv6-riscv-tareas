@@ -484,3 +484,67 @@ ismapped(pagetable_t pagetable, uint64 va)
   }
   return 0;
 }
+
+// Mark a range of user pages as non-readable (clear PTE_R).
+// addr must be page-aligned. len is number of pages.
+// Returns 0 on success, -1 on error.
+int
+mrdprotect(void *addr, int len)
+{
+  struct proc *p = myproc();
+  uint64 va = (uint64)addr;
+
+  if((va % PGSIZE) != 0)
+    return -1;
+  if(len <= 0)
+    return -1;
+  // check range fits in user address space (heap/size)
+  if(va + (uint64)len * PGSIZE > p->sz)
+    return -1;
+
+  for(uint64 a = va; a < va + (uint64)len * PGSIZE; a += PGSIZE){
+    if(a >= KERNBASE)
+      return -1;
+    pte_t *pte = walk(p->pagetable, a, 0);
+    if(pte == 0)
+      return -1;
+    if((*pte & PTE_V) == 0)
+      return -1;
+    if((*pte & PTE_U) == 0)
+      return -1;
+    *pte &= ~PTE_R; // clear read bit, keep others
+  }
+  // flush TLB
+  sfence_vma();
+  return 0;
+}
+
+// Restore read permission on a range of user pages (set PTE_R).
+int
+munrdprotect(void *addr, int len)
+{
+  struct proc *p = myproc();
+  uint64 va = (uint64)addr;
+
+  if((va % PGSIZE) != 0)
+    return -1;
+  if(len <= 0)
+    return -1;
+  if(va + (uint64)len * PGSIZE > p->sz)
+    return -1;
+
+  for(uint64 a = va; a < va + (uint64)len * PGSIZE; a += PGSIZE){
+    if(a >= KERNBASE)
+      return -1;
+    pte_t *pte = walk(p->pagetable, a, 0);
+    if(pte == 0)
+      return -1;
+    if((*pte & PTE_V) == 0)
+      return -1;
+    if((*pte & PTE_U) == 0)
+      return -1;
+    *pte |= PTE_R; // set read bit
+  }
+  sfence_vma();
+  return 0;
+}

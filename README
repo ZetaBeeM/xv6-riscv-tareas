@@ -46,3 +46,76 @@ You will need a RISC-V "newlib" tool chain from
 https://github.com/riscv/riscv-gnu-toolchain, and qemu compiled for
 riscv64-softmmu.  Once they are installed, and in your shell
 search path, you can run "make qemu".
+
+## INFORME - Tarea 3: Protección de Lectura en XV6
+
+Objetivo
+-------
+Implementar un mecanismo que permita marcar páginas de usuario como "sin lectura" (clear PTE_R) mientras mantiene permisos de escritura, y poder revertir esa protección.
+
+Cambios implementados
+---------------------
+- `kernel/vm.c`: implementación de `mrdprotect(void *addr, int len)` y `munrdprotect(void *addr, int len)`.
+- `kernel/vm.h`: prototipos añadidos.
+- `kernel/syscall.h`: añadidos `SYS_mrdprotect` y `SYS_munrdprotect`.
+- `kernel/syscall.c`: registro de los nuevos syscalls.
+- `kernel/sysproc.c`: handlers `sys_mrdprotect` y `sys_munrdprotect`.
+- `user/usys.pl`: stubs de usuario añadidos.
+- `user/user.h`: prototipos expuestos a userland.
+- `user/rdprotect_test.c`: programa de prueba (ahora usa `fork()` para comprobar la terminación del hijo).
+- `Makefile`: añadido `_rdprotect_test` a `UPROGS`.
+- `Dockerfile`: imagen para construir y ejecutar xv6 con toolchain RISC-V y QEMU.
+
+Implementación y validaciones
+-----------------------------
+- Las funciones validan:
+	- `addr` alineado a página.
+	- `len > 0`.
+	- El rango queda dentro del espacio de usuario del proceso (`myproc()->sz`).
+	- Cada PTE del rango existe (`PTE_V`) y es de usuario (`PTE_U`).
+	- No se opera sobre direcciones >= `KERNBASE`.
+- `mrdprotect` limpia únicamente el bit `PTE_R` sin tocar otros bits.
+- `munrdprotect` pone `PTE_R` en las PTEs afectadas.
+- Al finalizar se hace `sfence_vma()` para invalidar TLBs.
+
+Programa de prueba
+------------------
+Se añade `user/rdprotect_test.c`, que ahora hace lo siguiente:
+- `fork()` y el hijo reserva una página con `sbrk`, escribe en ella, la protege con `mrdprotect` y luego intenta leerla (ese `read` debe causar fallo y terminar el hijo).
+- El padre hace `wait(&status)` y comprueba si el hijo terminó de forma anómala (status != 0). Si el hijo murió por violación de lectura, el test tiene éxito.
+
+Cómo construir y ejecutar (con Docker)
+------------------------------------
+1) Construir la imagen Docker:
+
+```bash
+docker build -t xv6-build .
+```
+
+2) Ejecutar el contenedor y compilar:
+
+```bash
+docker run --rm -it -v "$(pwd)":/src -w /src xv6-build bash
+# dentro del contenedor:
+export TOOLPREFIX=riscv64-linux-gnu-
+make -j4 TOOLPREFIX=$TOOLPREFIX
+```
+
+3) Ejecutar xv6 en QEMU (desde el contenedor):
+
+```bash
+make qemu TOOLPREFIX=$TOOLPREFIX
+```
+
+4) En el prompt de xv6 ejecutar:
+
+```
+_rdprotect_test
+```
+
+Salida esperada:
+- El hijo debe morir por intentar leer una página marcada como "no legible"; el padre detecta la terminación anómala y el test pasa.
+
+Notas finales
+------------
+Si quieres que haga más (instrumentar el trap handler para distinguir fallos por ausencia de `PTE_R`, o preparar una rama git y commits listos para push), dímelo y lo añado.
