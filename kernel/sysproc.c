@@ -1,3 +1,4 @@
+
 #include "types.h"
 #include "riscv.h"
 #include "defs.h"
@@ -6,6 +7,23 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "vm.h"
+
+uint64
+sys_getancestor(void)
+{
+  int n;
+  argint(0, &n);
+  if(n < 0)
+    return -1;
+  struct proc *p = myproc();
+  while(n > 0 && p) {
+    p = p->parent;
+    n--;
+  }
+  if(p)
+    return p->pid;
+  return -1;
+}
 
 uint64
 sys_exit(void)
@@ -20,6 +38,12 @@ uint64
 sys_getpid(void)
 {
   return myproc()->pid;
+}
+
+uint64
+sys_getppid(void)
+{
+  return myproc()->parent ? myproc()->parent->pid : 0;
 }
 
 uint64
@@ -104,4 +128,38 @@ sys_uptime(void)
   xticks = ticks;
   release(&tickslock);
   return xticks;
+}
+
+
+uint64
+sys_settickets(void){
+  int n;
+  argint(0,&n); // Copiar el primer argumento de la funcion a n ya que xv6 no deja pasar argumentos del usuario al kernel directamente.
+  if (n >= 1){ // Revisar que el número sea mayor o igual a uno para asignarle esa cantidad de tickets.
+    myproc()->tickets = n;
+  }
+  else { // Si no lo es (e.j. cualquier número menor a uno), le asignamos el minimo de tickets para un proceso.
+    myproc()->tickets = 1;
+  }
+  return 0;
+}
+
+uint64
+sys_mrdprotect(void)
+{
+  uint64 addr;
+  int len;
+  argaddr(0, &addr);
+  argint(1, &len);
+  return mrdprotect((void*)addr, len);
+}
+
+uint64
+sys_munrdprotect(void)
+{
+  uint64 addr;
+  int len;
+  argaddr(0, &addr);
+  argint(1, &len);
+  return munrdprotect((void*)addr, len);
 }

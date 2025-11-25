@@ -484,3 +484,68 @@ ismapped(pagetable_t pagetable, uint64 va)
   }
   return 0;
 }
+
+// Marcamos una región como sin lectura (limpiando PTE_R).
+// Devuelve 0 si se ejecuta sin error, -1 si no.
+int
+mrdprotect(void *addr, int len)
+{
+  struct proc *p = myproc();
+  uint64 va = (uint64)addr;
+
+  // checks para revisar que la estructura sea valida en terminos de tamaño
+  if((va % PGSIZE) != 0)
+    return -1;
+  if(len <= 0)
+    return -1;
+  if(va + (uint64)len * PGSIZE > p->sz)
+    return -1;
+  // Verificamos que cada PTE del rango sea válido y del usuario, y limpiamos el bit PTE_R.
+  for(uint64 a = va; a < va + (uint64)len * PGSIZE; a += PGSIZE){
+    if(a >= KERNBASE)
+      return -1;
+    pte_t *pte = walk(p->pagetable, a, 0); //  Accedemos a la pagina que tiene los permisos.
+    if(pte == 0)
+      return -1;
+    if((*pte & PTE_V) == 0)
+      return -1;
+    if((*pte & PTE_U) == 0)
+      return -1;
+    *pte &= ~PTE_R; // Esto limpia el bit PTE_R, pero mantiene el resto.
+  }
+  // Limpiamos el TLB para prevenir que este se quede con una versión que si tenga PTE_R y acceda a esta durante la ejecución del programa.
+  sfence_vma();
+  return 0;
+}
+
+// Restauramos el permiso de lectura de paginas afectadas por mrdprotect setteando PTE_R.
+int
+munrdprotect(void *addr, int len)
+{
+  struct proc *p = myproc();
+  uint64 va = (uint64)addr;
+
+  // checks para revisar que la estructura sea valida en terminos de tamaño
+  if((va % PGSIZE) != 0)
+    return -1;
+  if(len <= 0)
+    return -1;
+  if(va + (uint64)len * PGSIZE > p->sz)
+    return -1;
+  // Verificamos que cada PTE del rango sea válido y del usuario, y setteamos el bit PTE_R.
+  for(uint64 a = va; a < va + (uint64)len * PGSIZE; a += PGSIZE){
+    if(a >= KERNBASE)
+      return -1;
+    pte_t *pte = walk(p->pagetable, a, 0);
+    if(pte == 0)
+      return -1;
+    if((*pte & PTE_V) == 0)
+      return -1;
+    if((*pte & PTE_U) == 0)
+      return -1;
+    *pte |= PTE_R;
+  }
+  // Limpiamos el TLB para prevenir que este se quede con una versión que no tenga PTE_R.
+  sfence_vma();
+  return 0;
+}

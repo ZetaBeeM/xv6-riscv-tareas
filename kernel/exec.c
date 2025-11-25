@@ -39,40 +39,59 @@ kexec(char *path, char **argv)
 
   // Open the executable file.
   if((ip = namei(path)) == 0){
+    printf("kexec: namei failed for %s\n", path);
     end_op();
     return -1;
   }
   ilock(ip);
 
   // Read the ELF header.
-  if(readi(ip, 0, (uint64)&elf, 0, sizeof(elf)) != sizeof(elf))
+  if(readi(ip, 0, (uint64)&elf, 0, sizeof(elf)) != sizeof(elf)){
+    printf("kexec: read elf header failed\n");
     goto bad;
+  }
 
   // Is this really an ELF file?
-  if(elf.magic != ELF_MAGIC)
+  if(elf.magic != ELF_MAGIC){
+    printf("kexec: bad ELF magic: 0x%x expected 0x%x\n", elf.magic, ELF_MAGIC);
     goto bad;
+  }
 
-  if((pagetable = proc_pagetable(p)) == 0)
+  if((pagetable = proc_pagetable(p)) == 0){
+    printf("kexec: proc_pagetable failed\n");
     goto bad;
+  }
 
   // Load program into memory.
   for(i=0, off=elf.phoff; i<elf.phnum; i++, off+=sizeof(ph)){
-    if(readi(ip, 0, (uint64)&ph, off, sizeof(ph)) != sizeof(ph))
+    if(readi(ip, 0, (uint64)&ph, off, sizeof(ph)) != sizeof(ph)){
+      printf("kexec: read program header failed (off %d)\n", off);
       goto bad;
+    }
     if(ph.type != ELF_PROG_LOAD)
       continue;
-    if(ph.memsz < ph.filesz)
+    if(ph.memsz < ph.filesz){
+      printf("kexec: ph.memsz < ph.filesz\n");
       goto bad;
-    if(ph.vaddr + ph.memsz < ph.vaddr)
+    }
+    if(ph.vaddr + ph.memsz < ph.vaddr){
+      printf("kexec: ph.vaddr overflow\n");
       goto bad;
-    if(ph.vaddr % PGSIZE != 0)
+    }
+    if(ph.vaddr % PGSIZE != 0){
+      printf("kexec: ph.vaddr not page aligned: 0x%p\n", (void*)ph.vaddr);
       goto bad;
+    }
     uint64 sz1;
-    if((sz1 = uvmalloc(pagetable, sz, ph.vaddr + ph.memsz, flags2perm(ph.flags))) == 0)
+    if((sz1 = uvmalloc(pagetable, sz, ph.vaddr + ph.memsz, flags2perm(ph.flags))) == 0){
+      printf("kexec: uvmalloc failed for vaddr 0x%p\n", (void*)ph.vaddr);
       goto bad;
+    }
     sz = sz1;
-    if(loadseg(pagetable, ph.vaddr, ip, ph.off, ph.filesz) < 0)
+    if(loadseg(pagetable, ph.vaddr, ip, ph.off, ph.filesz) < 0){
+      printf("kexec: loadseg failed for vaddr 0x%p\n", (void*)ph.vaddr);
       goto bad;
+    }
   }
   iunlockput(ip);
   end_op();

@@ -142,6 +142,10 @@ UPROGS=\
 	$U/_logstress\
 	$U/_forphan\
 	$U/_dorphan\
+	$U/_yosoytupadre\
+	$U/_pruebalottery\
+	$U/_demo\
+	$U/_rdprotect_test\
 
 fs.img: mkfs/mkfs README $(UPROGS)
 	mkfs/mkfs fs.img README $(UPROGS)
